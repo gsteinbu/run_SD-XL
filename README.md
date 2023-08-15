@@ -6,4 +6,4 @@ Follow the instructions in `prepare.sh` to install necessary packages.
 
 # Usage
 
-Simply adopt the `pos_prompt` and `neg_prompt` in `generate.py`. Then run `python generate.py`. Generate images will be saved to the folder `generated`.
+Simply adopt the `pos_prompt` and `neg_prompt` in `generate.py`. Then run `python generate.py`. Generated images will be saved to the folder `./generated`.
