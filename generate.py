@@ -1,74 +1,85 @@
 
-import datetime, os
+import datetime, os, json
 
-from PIL import Image
 from diffusers import DiffusionPipeline
 import torch
 
-pos_prompt = 'blind fantasy dwarf with colorful hair and a blindfold'
-neg_prompt = 'headgear, hat, cap, headband'
+prompt_dict = {
+    'pos': 'young elf medival swashbuckler real',
+    'neg': 'hat, headwear, head covering' # Set to 'None' if not needed
+}
+
+# TODO I could make these argumnets to the script (via 'arparse')
+n_steps = 40
+high_noise_frac = 0.8
+n_imgs = 5 # For my system 5 seems a sweetspot (usage of model offload instead of sequential)
 
 # Not sure if there is benifit from the following
 # https://huggingface.co/docs/diffusers/v0.9.0/en/optimization/fp16#use-tf32-instead-of-fp32-on-ampere-and-later-cuda-devices
 torch.backends.cuda.matmul.allow_tf32 = True
 
+gen_start = datetime.datetime.now()
+gen_start_str = gen_start.strftime("%Y-%m-%d_%H-%M-%S")
+print(f'Started at {gen_start_str}')
+
+print(f'Generating {n_imgs} latent images')
 base = DiffusionPipeline.from_pretrained(
     './stable-diffusion-xl-base-1.0', 
     torch_dtype=torch.float16, 
     use_safetensors=True, 
     variant='fp16'
 )
-base.enable_model_cpu_offload()
+# model offload is quicker than sequential, however, execds my memory for more than 5 images
+if n_imgs <= 5:
+    base.enable_model_cpu_offload()
+else: 
+    base.enable_sequential_cpu_offload()
+latent_images  = base(
+    prompt = prompt_dict['pos'], 
+    negative_prompt = prompt_dict['neg'],
+    num_images_per_prompt = n_imgs,
+    num_inference_steps = n_steps,
+    denoising_end = high_noise_frac,
+    output_type = "latent"
+).images
+del base # Make sure memory gets freed
+
+print(f'Generating {n_imgs} refined images from laten ones')
 refiner = DiffusionPipeline.from_pretrained(
     './stable-diffusion-xl-refiner-1.0', 
     torch_dtype=torch.float16, 
     use_safetensors=True, 
     variant='fp16'
 )
-refiner.enable_model_cpu_offload()
-
-n_steps = 50
-high_noise_frac = 0.8
-n_imgs = 4
-
-gen_start = datetime.datetime.now()
-gen_start_str = gen_start.strftime("%Y-%m-%d_%H-%M-%S")
-print(f'Started at {gen_start_str}')
-print(f'Generating {n_imgs} latent images (all at once)')
-image  = base(
-    prompt = pos_prompt, 
-    negative_prompt = neg_prompt,
+if n_imgs <= 5:
+    refiner.enable_model_cpu_offload()
+else: 
+    refiner.enable_sequential_cpu_offload()
+# Otherwise VAE stage will run out of memory (might not be necessary for n_imgs > 5)
+if n_imgs > 2:    
+    refiner.enable_vae_slicing()
+final_images = refiner(
+    prompt = prompt_dict['pos'], 
+    negative_prompt = prompt_dict['neg'],
     num_images_per_prompt = n_imgs,
     num_inference_steps = n_steps,
-    denoising_end = high_noise_frac,
-    output_type="latent"
-)
-# Explicitly drop the base to CPU, otherwise my GPU memory wont be enough...
-base.to('cpu')
-print(f'Generating {n_imgs} refined images from laten ones (all seperate)')
+    denoising_start = high_noise_frac,
+    image = latent_images
+).images
+
+# Create output folder, if needed
+outdir = f'generated/{gen_start_str}'
+# Should not exist, but just to be sure:
+if not os.path.isdir(outdir): 
+    os.makedirs(outdir, exist_ok = True)
+
 # I could also do all images at once, however, my GPU memory is not large enough...
-final_images = [
-    refiner(
-        prompt = pos_prompt, 
-        negative_prompt = neg_prompt,
-        num_images_per_prompt = 1,
-        num_inference_steps = n_steps,
-        denoising_start = high_noise_frac,
-        image = img
-    ).images[0]
-    for img in image.images
-]
-refiner.to('cpu')
+for i, fimg in enumerate(final_images):
+    img_file = f'{outdir}/{i}.png'
+    print(f'Saving final image {i} to {img_file}')
+    fimg.save(img_file)
 
-print(f'Generation duration: {datetime.datetime.now() - gen_start}')
+with open(f'{outdir}/prompt.json', mode='w') as jfile:
+    json.dump(prompt_dict, fp=jfile)
 
-# Create output folder if needed
-if not os.path.isdir('generated'):
-    os.makedirs('generated')
-
-img_file = f'generated/{gen_start_str}.png'
-print(f'Saving images to {img_file}')
-full_image = Image.new('RGB', (n_imgs * final_images[0].width, final_images[0].height))
-for i in range(n_imgs):
-    full_image.paste(final_images[i], (i * final_images[0].width, 0))
-full_image.save(img_file)
+print(f'Full generation duration took {datetime.datetime.now() - gen_start}')

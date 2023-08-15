@@ -1,4 +1,4 @@
-Run [SD-XL 1.0](https://arxiv.org/abs/2307.01952) on a local machine.
+Run [SD-XL 1.0](https://arxiv.org/abs/2307.01952) on a local machine ([Hugging Face documentation](https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/stable_diffusion_xl)).
 
 #  Prepare
 
